@@ -7,6 +7,7 @@ const storage = require('./storage');
 const scheduler = require('./scheduler');
 const notifier = require('./notifier');
 const routes = require('./routes');
+const { DEFAULT_REGIONS } = require('./constants');
 
 const app = express();
 const server = http.createServer(app);
@@ -35,6 +36,7 @@ app.use((err, req, res, next) => {
 
 async function start() {
   await storage.initDB();
+  await storage.regions.ensureDefaults(DEFAULT_REGIONS);
   console.log(`[Storage] Database initialized at ${config.dbPath}`);
   console.log(`[Storage] Logs directory: ${config.logDir}`);
 

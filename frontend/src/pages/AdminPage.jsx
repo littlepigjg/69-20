@@ -7,13 +7,15 @@ import {
   FormField, TextInput, SelectInput, CheckboxInput,
   Button, IconButton
 } from '../components/Form.jsx'
+import { RegionTagList, RegionSelect } from '../components/Region.jsx'
+import { buildRegionsMap } from '../lib/constants'
 import useApi from '../hooks/useApi'
 
 function ToastProvider() {
   return null
 }
 
-function ServiceForm({ initial, services, onSubmit, onCancel }) {
+function ServiceForm({ initial, services, regions = [], onSubmit, onCancel }) {
   const [form, setForm] = useState({
     name: initial?.name || '',
     type: initial?.type || 'http',
@@ -23,9 +25,11 @@ function ServiceForm({ initial, services, onSubmit, onCancel }) {
     expectedStatus: initial?.expectedStatus || 200,
     interval_seconds: initial?.interval_seconds || 30,
     timeout_ms: initial?.timeout_ms || 5000,
-    enabled: initial?.enabled !== undefined ? initial.enabled : 1
+    enabled: initial?.enabled !== undefined ? initial.enabled : 1,
+    region: initial?.region || ''
   })
   const [errors, setErrors] = useState({})
+  const regionsMap = useMemo(() => buildRegionsMap(regions), [regions])
 
   const set = (k, v) => {
     setForm(f => ({ ...f, [k]: v }))
@@ -136,6 +140,16 @@ function ServiceForm({ initial, services, onSubmit, onCancel }) {
           <TextInput type="number" value={form.timeout_ms} onChange={v => set('timeout_ms', v)} min="100" />
         </FormField>
       </div>
+
+      <FormField label="部署地域" help="支持多选，跨地域服务用逗号分隔多个地域，可自定义添加新地域">
+        <RegionSelect
+          value={form.region}
+          onChange={v => set('region', v)}
+          regions={regions}
+          regionsMap={regionsMap}
+          allowCustom={true}
+        />
+      </FormField>
 
       <div style={{ padding: '12px 0' }}>
         <CheckboxInput
@@ -286,18 +300,24 @@ function useToast() {
 }
 
 export default function AdminPage() {
-  const { services, fetchServices, maintenance, fetchMaintenance } = useApp()
+  const { services, fetchServices, maintenance, fetchMaintenance, regions, fetchRegions } = useApp()
   const [tab, setTab] = useState('services')
   const [showServiceForm, setShowServiceForm] = useState(null)
   const [showMaintForm, setShowMaintForm] = useState(null)
   const [openMaintenanceMenu, setOpenMaintenanceMenu] = useState(null)
   const { get, post, put, del } = useApi('/api')
   const { toast, show: showToast } = useToast()
+  const regionsMap = useMemo(() => {
+    const map = {}
+    for (const r of regions || []) map[r.name] = r
+    return map
+  }, [regions])
 
   const handleCreateService = async (data) => {
     try {
       await post('/services', data)
       await fetchServices()
+      await fetchRegions()
       setShowServiceForm(null)
       showToast('服务已添加')
     } catch (e) {
@@ -309,6 +329,7 @@ export default function AdminPage() {
     try {
       await put(`/services/${id}`, data)
       await fetchServices()
+      await fetchRegions()
       setShowServiceForm(null)
       showToast('服务已更新')
     } catch (e) {
@@ -512,8 +533,9 @@ export default function AdminPage() {
                   </div>
 
                   <div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 4, flexWrap: 'wrap' }}>
                       <h3 style={{ fontSize: 16, fontWeight: 600 }}>{svc.name}</h3>
+                      <RegionTagList regionStr={svc.region} regionsMap={regionsMap} size="sm" />
                       {!svc.enabled && (
                         <span style={{
                           padding: '2px 8px', fontSize: 11, borderRadius: 4,
@@ -724,6 +746,7 @@ export default function AdminPage() {
           <ServiceForm
             initial={showServiceForm.data}
             services={services}
+            regions={regions}
             onSubmit={showServiceForm.mode === 'create'
               ? handleCreateService
               : (data) => handleUpdateService(showServiceForm.data.id, data)

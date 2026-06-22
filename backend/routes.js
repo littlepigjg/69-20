@@ -71,7 +71,7 @@ router.put('/services/:id', async (req, res) => {
     if (!existing) return res.status(404).json({ error: 'Service not found' });
 
     const data = req.body || {};
-    const allowed = ['name', 'type', 'target', 'port', 'method', 'expectedStatus', 'interval_seconds', 'timeout_ms', 'enabled'];
+    const allowed = ['name', 'type', 'target', 'port', 'method', 'expectedStatus', 'interval_seconds', 'timeout_ms', 'enabled', 'region'];
     const toUpdate = {};
     for (const key of allowed) {
       if (key in data) toUpdate[key] = data[key];
@@ -238,20 +238,112 @@ router.get('/status/summary', async (req, res) => {
     const services = await storage.services.getAll();
     let up = 0, down = 0, maintenance = 0, unknown = 0;
     const summaries = [];
+    const regionStats = new Map();
     for (const svc of services) {
       const s = await status.getServiceSummary(svc.id);
       if (s.status === 'up') up++;
       else if (s.status === 'down') down++;
       else if (s.status === 'maintenance') maintenance++;
       else unknown++;
-      summaries.push({ serviceId: svc.id, name: svc.name, type: svc.type, ...s });
+      summaries.push({ serviceId: svc.id, name: svc.name, type: svc.type, region: svc.region || '', ...s });
+      const regions = (svc.region || '').split(',').map(r => r.trim()).filter(Boolean);
+      if (regions.length === 0) regions.push('未分配');
+      for (const r of regions) {
+        if (!regionStats.has(r)) regionStats.set(r, { total: 0, up: 0, down: 0, maintenance: 0, unknown: 0 });
+        const rs = regionStats.get(r);
+        rs.total++;
+        if (s.status === 'up') rs.up++;
+        else if (s.status === 'down') rs.down++;
+        else if (s.status === 'maintenance') rs.maintenance++;
+        else rs.unknown++;
+      }
+    }
+
+    const regionsList = [];
+    for (const [name, stats] of regionStats) {
+      regionsList.push({ name, ...stats });
     }
 
     res.json({
       total: services.length,
       counts: { up, down, maintenance, unknown },
-      services: summaries
+      services: summaries,
+      regions: regionsList
     });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/regions', async (req, res) => {
+  try {
+    res.json(await storage.regions.getAll());
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/regions', async (req, res) => {
+  try {
+    const data = req.body || {};
+    if (!data.name || !data.name.trim()) {
+      return res.status(400).json({ error: '地域名称不能为空' });
+    }
+    const existing = await storage.regions.getByName(data.name.trim());
+    if (existing) {
+      return res.status(400).json({ error: '该地域已存在' });
+    }
+    const created = await storage.regions.create({
+      name: data.name.trim(),
+      color: data.color || '#6366f1',
+      is_custom: 1
+    });
+    res.status(201).json(created);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.put('/regions/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const existing = await storage.regions.getById(id);
+    if (!existing) return res.status(404).json({ error: '地域不存在' });
+    const data = req.body || {};
+    const toUpdate = {};
+    if (data.name !== undefined) toUpdate.name = data.name.trim();
+    if (data.color !== undefined) toUpdate.color = data.color;
+    const updated = await storage.regions.update(id, toUpdate);
+    res.json(updated);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.delete('/regions/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const existing = await storage.regions.getById(id);
+    if (!existing) return res.status(404).json({ error: '地域不存在' });
+    if (!existing.is_custom) return res.status(400).json({ error: '预定义地域不能删除' });
+    await storage.regions.remove(id);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/services/:id/region-history', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const svc = await storage.services.getById(id);
+    if (!svc) return res.status(404).json({ error: 'Service not found' });
+    res.json(await storage.regionHistory.getByServiceId(id));
   } catch (e) {
     console.error(e);
     res.status(500).json({ error: e.message });

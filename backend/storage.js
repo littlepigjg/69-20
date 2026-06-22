@@ -57,8 +57,39 @@ async function initDB() {
       interval_seconds INTEGER DEFAULT 30,
       timeout_ms INTEGER DEFAULT 5000,
       enabled INTEGER DEFAULT 1,
+      region TEXT DEFAULT '',
       created_at TEXT DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  dirty = true;
+
+  try {
+    const cols = db.exec("PRAGMA table_info(services)").map(r => r[1]);
+    if (!cols.includes('region')) {
+      db.run("ALTER TABLE services ADD COLUMN region TEXT DEFAULT ''");
+      dirty = true;
+    }
+  } catch (e) {}
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS regions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL UNIQUE,
+      color TEXT DEFAULT '#6366f1',
+      is_custom INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+  dirty = true;
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS region_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      service_id INTEGER NOT NULL,
+      old_region TEXT DEFAULT '',
+      new_region TEXT DEFAULT '',
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )
   `);
   dirty = true;
@@ -158,22 +189,30 @@ const services = {
       timeout_ms: config.defaultTimeoutMs,
       enabled: 1,
       port: null,
+      region: '',
       ...data
     };
     const res = run(
-      `INSERT INTO services (name, type, target, port, method, expectedStatus, interval_seconds, timeout_ms, enabled)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [payload.name, payload.type, payload.target, payload.port, payload.method, payload.expectedStatus, payload.interval_seconds, payload.timeout_ms, payload.enabled]
+      `INSERT INTO services (name, type, target, port, method, expectedStatus, interval_seconds, timeout_ms, enabled, region)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [payload.name, payload.type, payload.target, payload.port, payload.method, payload.expectedStatus, payload.interval_seconds, payload.timeout_ms, payload.enabled, payload.region || '']
     );
+    if (payload.region) {
+      await regionHistory.add(res.lastID, '', payload.region);
+    }
     saveDB();
     return queryOne('SELECT * FROM services WHERE id = ?', [res.lastID]);
   },
   update: async (id, data) => {
     const keys = Object.keys(data);
     if (keys.length === 0) return queryOne('SELECT * FROM services WHERE id = ?', [id]);
+    const existing = await queryOne('SELECT * FROM services WHERE id = ?', [id]);
     const sets = keys.map(k => `${k} = ?`).join(', ');
     const values = keys.map(k => data[k]);
     run(`UPDATE services SET ${sets}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [...values, id]);
+    if (data.region !== undefined && existing && existing.region !== data.region) {
+      await regionHistory.add(id, existing.region || '', data.region || '');
+    }
     saveDB();
     return queryOne('SELECT * FROM services WHERE id = ?', [id]);
   },
@@ -181,6 +220,7 @@ const services = {
     run('DELETE FROM services WHERE id = ?', [id]);
     run('DELETE FROM check_results WHERE service_id = ?', [id]);
     run('DELETE FROM maintenance_windows WHERE service_id = ?', [id]);
+    run('DELETE FROM region_history WHERE service_id = ?', [id]);
     saveDB();
     return { changes: 1 };
   }
@@ -243,10 +283,63 @@ process.on('beforeExit', saveDB);
 process.on('SIGINT', () => { saveDB(); process.exit(0); });
 process.on('SIGTERM', () => { saveDB(); process.exit(0); });
 
+const regions = {
+  getAll: async () => query('SELECT * FROM regions ORDER BY is_custom, name'),
+  getById: async (id) => queryOne('SELECT * FROM regions WHERE id = ?', [id]),
+  getByName: async (name) => queryOne('SELECT * FROM regions WHERE name = ?', [name]),
+  create: async (data) => {
+    const payload = { color: '#6366f1', is_custom: 1, ...data };
+    const res = run(
+      'INSERT INTO regions (name, color, is_custom) VALUES (?, ?, ?)',
+      [payload.name, payload.color, payload.is_custom ? 1 : 0]
+    );
+    saveDB();
+    return queryOne('SELECT * FROM regions WHERE id = ?', [res.lastID]);
+  },
+  update: async (id, data) => {
+    const keys = Object.keys(data);
+    if (keys.length === 0) return queryOne('SELECT * FROM regions WHERE id = ?', [id]);
+    const sets = keys.map(k => `${k} = ?`).join(', ');
+    const values = keys.map(k => data[k]);
+    run(`UPDATE regions SET ${sets} WHERE id = ?`, [...values, id]);
+    saveDB();
+    return queryOne('SELECT * FROM regions WHERE id = ?', [id]);
+  },
+  remove: async (id) => {
+    run('DELETE FROM regions WHERE id = ? AND is_custom = 1', [id]);
+    saveDB();
+    return { changes: 1 };
+  },
+  ensureDefaults: async (defaultRegions) => {
+    for (const r of defaultRegions) {
+      const exists = await queryOne('SELECT id FROM regions WHERE name = ?', [r.name]);
+      if (!exists) {
+        run('INSERT INTO regions (name, color, is_custom) VALUES (?, ?, 0)', [r.name, r.color]);
+      }
+    }
+    dirty = true;
+    saveDB();
+  }
+};
+
+const regionHistory = {
+  getByServiceId: async (serviceId) =>
+    query('SELECT * FROM region_history WHERE service_id = ? ORDER BY created_at DESC', [serviceId]),
+  add: async (serviceId, oldRegion, newRegion) => {
+    run(
+      'INSERT INTO region_history (service_id, old_region, new_region) VALUES (?, ?, ?)',
+      [serviceId, oldRegion || '', newRegion || '']
+    );
+    saveDB();
+  }
+};
+
 module.exports = {
   initDB,
   cleanupOldData,
   services,
   checkResults,
-  maintenance
+  maintenance,
+  regions,
+  regionHistory
 };

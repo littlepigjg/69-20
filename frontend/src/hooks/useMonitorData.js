@@ -4,6 +4,7 @@ import useWebSocket from './useWebSocket'
 export default function useMonitorData({ onMessage } = {}) {
   const [services, setServices] = useState([])
   const [maintenance, setMaintenance] = useState([])
+  const [regions, setRegions] = useState([])
   const [lastUpdate, setLastUpdate] = useState(null)
   const [loading, setLoading] = useState(true)
 
@@ -32,6 +33,17 @@ export default function useMonitorData({ onMessage } = {}) {
       setMaintenance(data)
     } catch (e) {
       console.error('Fetch maintenance error:', e)
+    }
+  }, [])
+
+  const fetchRegions = useCallback(async () => {
+    try {
+      const res = await fetch('/api/regions')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const data = await res.json()
+      setRegions(data)
+    } catch (e) {
+      console.error('Fetch regions error:', e)
     }
   }, [])
 
@@ -69,20 +81,24 @@ export default function useMonitorData({ onMessage } = {}) {
   useEffect(() => {
     fetchServices()
     fetchMaintenance()
+    fetchRegions()
     const timer = setInterval(() => {
       fetchServices()
       fetchMaintenance()
+      fetchRegions()
     }, 30000)
     return () => clearInterval(timer)
-  }, [fetchServices, fetchMaintenance])
+  }, [fetchServices, fetchMaintenance, fetchRegions])
 
   return {
     services,
     maintenance,
+    regions,
     lastUpdate,
     loading,
     fetchServices,
     fetchMaintenance,
+    fetchRegions,
     connectionState: ws.connectionState,
     isConnected: ws.isConnected,
     isConnecting: ws.isConnecting,
